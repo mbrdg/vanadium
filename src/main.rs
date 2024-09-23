@@ -1,3 +1,4 @@
+use core::panic;
 use std::{
     collections::HashMap,
     env,
@@ -34,6 +35,11 @@ impl Url {
     pub fn new(url: &str) -> Self {
         if url.starts_with("data:") {
             let (mediatype, content) = url.strip_prefix("data:").unwrap().split_once(',').unwrap();
+            assert!(
+                mediatype == "text/html",
+                "Unsupported media type: {mediatype}"
+            );
+
             return Self::Data {
                 mediatype: mediatype.to_string(),
                 content: content.to_string(),
@@ -70,7 +76,7 @@ impl Url {
         match scheme {
             "http" => Self::Http { host, port, path },
             "https" => Self::Https { host, port, path },
-            _ => unreachable!(),
+            _ => panic!("Unsupported scheme: {scheme}"),
         }
     }
 
@@ -80,11 +86,7 @@ impl Url {
             return content;
         }
 
-        if let Self::Data { mediatype, content } = self {
-            assert_eq!(
-                mediatype, "text/html",
-                "Unsupported media type: {mediatype}"
-            );
+        if let Self::Data { content, .. } = self {
             return content.to_string();
         }
 
@@ -92,7 +94,7 @@ impl Url {
             Self::Http { host, port, path } | Self::Https { host, port, path } => {
                 (host.as_str(), *port, path.as_str())
             }
-            _ => unreachable!(),
+            _ => panic!("`host`, `port` and `path` are only available for http/https schemes"),
         };
 
         let mut s = TcpStream::connect((host, port)).unwrap();
