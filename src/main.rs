@@ -98,8 +98,8 @@ impl Url {
         let mut s = TcpStream::connect((host, port)).unwrap();
 
         let mut request = String::new();
-        write!(&mut request, "GET {} HTTP/1.1\r\n", path).unwrap();
-        write!(&mut request, "Host: {}\r\n", host).unwrap();
+        write!(&mut request, "GET {path} HTTP/1.1\r\n").unwrap();
+        write!(&mut request, "Host: {host}\r\n").unwrap();
         write!(&mut request, "Connection: close\r\n").unwrap();
         write!(&mut request, "User-Agent: vanadium/0.1.0\r\n").unwrap();
         write!(&mut request, "\r\n").unwrap();
