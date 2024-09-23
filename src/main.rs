@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     env,
     fmt::Write as _,
+    fs,
     io::{BufRead, BufReader, Write as _},
     net::TcpStream,
     sync::Arc,
@@ -9,17 +10,32 @@ use std::{
 
 use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStore, Stream};
 
-pub struct Url {
-    scheme: String,
-    host: String,
-    path: String,
-    port: u16,
+pub enum Url {
+    Http {
+        host: String,
+        port: u16,
+        path: String,
+    },
+    Https {
+        host: String,
+        port: u16,
+        path: String,
+    },
+    File {
+        path: String,
+    },
 }
 
 impl Url {
     pub fn new(url: &str) -> Self {
         let mut parts = url.splitn(2, "://");
         let scheme = parts.next().unwrap().to_string();
+
+        if scheme == "file" {
+            return Self::File {
+                path: parts.next().unwrap().to_string(),
+            };
+        }
 
         let mut port = match scheme.as_str() {
             "http" => 80,
@@ -44,39 +60,50 @@ impl Url {
             host = name;
         }
 
-        Url {
-            scheme,
-            host,
-            path,
-            port,
+        match scheme.as_str() {
+            "http" => Self::Http { host, port, path },
+            "https" => Self::Https { host, port, path },
+            _ => unreachable!(),
         }
     }
 
     pub fn request(&self) -> String {
-        let mut s = TcpStream::connect((self.host.as_str(), self.port)).unwrap();
+        if let Self::File { path } = self {
+            let content = fs::read_to_string(path).unwrap();
+            return content;
+        }
+
+        let (host, port, path) = match self {
+            Self::Http { host, port, path } | Self::Https { host, port, path } => {
+                (host.as_str(), *port, path.as_str())
+            }
+            _ => unreachable!(),
+        };
+
+        let mut s = TcpStream::connect((host, port)).unwrap();
 
         let mut request = String::new();
-        write!(&mut request, "GET {} HTTP/1.1\r\n", self.path).unwrap();
-        write!(&mut request, "Host: {}\r\n", self.host).unwrap();
+        write!(&mut request, "GET {} HTTP/1.1\r\n", path).unwrap();
+        write!(&mut request, "Host: {}\r\n", host).unwrap();
         write!(&mut request, "Connection: close\r\n").unwrap();
         write!(&mut request, "User-Agent: vanadium/0.1.0\r\n").unwrap();
         write!(&mut request, "\r\n").unwrap();
 
-        match self.scheme.as_str() {
-            "http" => {
+        match self {
+            Self::Http { .. } => {
                 s.write_all(request.as_bytes()).unwrap();
 
                 let mut response = BufReader::new(s);
                 Url::read_response(&mut response)
             }
-            "https" => {
+            Self::Https { host, .. } => {
                 let root_store =
                     RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
                 let config = ClientConfig::builder()
                     .with_root_certificates(root_store)
                     .with_no_client_auth();
 
-                let hostname = ServerName::try_from(self.host.clone()).unwrap();
+                let hostname = ServerName::try_from(host.clone()).unwrap();
                 let mut client = ClientConnection::new(Arc::new(config), hostname).unwrap();
                 let mut s = Stream::new(&mut client, &mut s);
 
@@ -140,5 +167,10 @@ fn load(url: &Url) {
 
 fn main() {
     let args = env::args().collect::<Vec<_>>();
-    load(&Url::new(&args[1]));
+    let url = args.get(1).map_or(
+        "file:///Users/mbrdg/Code/vanadium/README.md",
+        String::as_str,
+    );
+
+    load(&Url::new(url));
 }
