@@ -24,10 +24,22 @@ pub enum Url {
     File {
         path: String,
     },
+    Data {
+        mediatype: String,
+        content: String,
+    },
 }
 
 impl Url {
     pub fn new(url: &str) -> Self {
+        if url.starts_with("data:") {
+            let mut parts = url.strip_prefix("data:").unwrap().splitn(2, ',');
+            return Self::Data {
+                mediatype: parts.next().unwrap().to_string(),
+                content: parts.next().unwrap().to_string(),
+            };
+        }
+
         let mut parts = url.splitn(2, "://");
         let scheme = parts.next().unwrap().to_string();
 
@@ -71,6 +83,14 @@ impl Url {
         if let Self::File { path } = self {
             let content = fs::read_to_string(path).unwrap();
             return content;
+        }
+
+        if let Self::Data { mediatype, content } = self {
+            assert_eq!(
+                mediatype, "text/html",
+                "Unsupported media type: {mediatype}"
+            );
+            return content.to_string();
         }
 
         let (host, port, path) = match self {
