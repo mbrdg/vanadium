@@ -33,46 +33,41 @@ pub enum Url {
 impl Url {
     pub fn new(url: &str) -> Self {
         if url.starts_with("data:") {
-            let mut parts = url.strip_prefix("data:").unwrap().splitn(2, ',');
+            let (mediatype, content) = url.strip_prefix("data:").unwrap().split_once(',').unwrap();
             return Self::Data {
-                mediatype: parts.next().unwrap().to_string(),
-                content: parts.next().unwrap().to_string(),
+                mediatype: mediatype.to_string(),
+                content: content.to_string(),
             };
         }
 
-        let mut parts = url.splitn(2, "://");
-        let scheme = parts.next().unwrap().to_string();
-
+        let (scheme, url) = url.split_once("://").unwrap();
         if scheme == "file" {
             return Self::File {
-                path: parts.next().unwrap().to_string(),
+                path: url.to_string(),
             };
         }
 
-        let mut port = match scheme.as_str() {
-            "http" => 80,
-            "https" => 443,
-            _ => panic!("Unsupported scheme: {scheme}"),
-        };
-
-        let mut remainder = parts.next().unwrap().to_string();
+        let mut remainder = url.to_string();
         if !remainder.contains('/') {
             remainder.push('/');
         }
 
-        let mut parts = remainder.splitn(2, '/');
-        let mut host = parts.next().unwrap().to_string();
-        let mut path = String::from('/');
-        path.push_str(parts.next().unwrap());
+        let (host, url) = remainder.split_once('/').unwrap();
+        let mut host = host.to_string();
+        let mut port = match scheme {
+            "http" => 80,
+            "https" => 443,
+            _ => panic!("Unsupported scheme: {scheme}"),
+        };
+        let path = format!("/{url}");
 
         if host.contains(':') {
-            let mut parts = host.splitn(2, ':');
-            let name = parts.next().unwrap().to_string();
-            port = parts.next().unwrap().parse().unwrap();
-            host = name;
+            let (h, p) = host.split_once(':').unwrap();
+            port = p.parse().unwrap();
+            host = h.to_string();
         }
 
-        match scheme.as_str() {
+        match scheme {
             "http" => Self::Http { host, port, path },
             "https" => Self::Https { host, port, path },
             _ => unreachable!(),
