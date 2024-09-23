@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
     env,
-    io::{BufRead, BufReader, Write},
+    fmt::Write as _,
+    io::{BufRead, BufReader, Write as _},
     net::TcpStream,
     sync::Arc,
 };
@@ -53,7 +54,13 @@ impl Url {
 
     pub fn request(&self) -> String {
         let mut s = TcpStream::connect((self.host.as_str(), self.port)).unwrap();
-        let request = format!("GET {} HTTP/1.0\r\nHOST: {}\r\n\r\n", self.path, self.host);
+
+        let mut request = String::new();
+        write!(&mut request, "GET {} HTTP/1.1\r\n", self.path).unwrap();
+        write!(&mut request, "Host: {}\r\n", self.host).unwrap();
+        write!(&mut request, "Connection: close\r\n").unwrap();
+        write!(&mut request, "User-Agent: vanadium/0.1.0\r\n").unwrap();
+        write!(&mut request, "\r\n").unwrap();
 
         match self.scheme.as_str() {
             "http" => {
