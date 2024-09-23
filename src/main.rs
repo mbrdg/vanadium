@@ -1,22 +1,30 @@
 use std::{
     collections::HashMap,
     env,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     net::TcpStream,
+    sync::Arc,
 };
 
-struct Url {
-    // scheme: String,
+use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStore, Stream};
+
+pub struct Url {
+    scheme: String,
     host: String,
     path: String,
+    port: u16,
 }
 
 impl Url {
-    fn new(url: &str) -> Self {
+    pub fn new(url: &str) -> Self {
         let mut parts = url.splitn(2, "://");
-
         let scheme = parts.next().unwrap().to_string();
-        assert!(&scheme == "http", "Unsupported scheme: {scheme}");
+
+        let mut port = match scheme.as_str() {
+            "http" => 80,
+            "https" => 443,
+            _ => panic!("Unsupported scheme: {scheme}"),
+        };
 
         let mut remainder = parts.next().unwrap().to_string();
         if !remainder.contains('/') {
@@ -24,24 +32,59 @@ impl Url {
         }
 
         let mut parts = remainder.splitn(2, '/');
-
-        let host = parts.next().unwrap().to_string();
+        let mut host = parts.next().unwrap().to_string();
         let mut path = String::from('/');
         path.push_str(parts.next().unwrap());
 
-        Url { host, path }
+        if host.contains(':') {
+            let mut parts = host.splitn(2, ':');
+            let name = parts.next().unwrap().to_string();
+            port = parts.next().unwrap().parse().unwrap();
+            host = name;
+        }
+
+        Url {
+            scheme,
+            host,
+            path,
+            port,
+        }
     }
 
-    fn request(&self) -> String {
-        let mut s = TcpStream::connect((self.host.as_str(), 80)).unwrap();
-
+    pub fn request(&self) -> String {
+        let mut s = TcpStream::connect((self.host.as_str(), self.port)).unwrap();
         let request = format!("GET {} HTTP/1.0\r\nHOST: {}\r\n\r\n", self.path, self.host);
-        s.write_all(request.as_bytes()).unwrap();
 
-        let mut response = BufReader::new(s);
+        match self.scheme.as_str() {
+            "http" => {
+                s.write_all(request.as_bytes()).unwrap();
 
+                let mut response = BufReader::new(s);
+                Url::read_response(&mut response)
+            }
+            "https" => {
+                let root_store =
+                    RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                let config = ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+
+                let hostname = ServerName::try_from(self.host.clone()).unwrap();
+                let mut client = ClientConnection::new(Arc::new(config), hostname).unwrap();
+                let mut s = Stream::new(&mut client, &mut s);
+
+                s.write_all(request.as_bytes()).unwrap();
+
+                let mut response = BufReader::new(s);
+                Url::read_response(&mut response)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn read_response(reader: &mut impl BufRead) -> String {
         let mut statusline = String::new();
-        response.read_line(&mut statusline).unwrap();
+        reader.read_line(&mut statusline).unwrap();
         let mut parts = statusline.splitn(3, ' ');
         let _version = parts.next().unwrap();
         let _status = parts.next().unwrap();
@@ -50,7 +93,7 @@ impl Url {
         let mut response_headers = HashMap::new();
         loop {
             let mut line = String::new();
-            response.read_line(&mut line).unwrap();
+            reader.read_line(&mut line).unwrap();
             if line.trim_end().is_empty() {
                 break;
             }
@@ -65,7 +108,7 @@ impl Url {
         assert!(!response_headers.contains_key("content-encoding"));
 
         let mut content = String::new();
-        response.read_to_string(&mut content).unwrap();
+        reader.read_to_string(&mut content).unwrap();
         content
     }
 }
