@@ -1,4 +1,3 @@
-use core::panic;
 use std::{
     collections::HashMap,
     env,
@@ -164,13 +163,47 @@ impl Url {
     }
 }
 
+enum EntityReadError {
+    Eof,
+    Unsupported(usize),
+}
+
+fn read_entity(body: &str) -> Result<(usize, &'static str), EntityReadError> {
+    assert!(body.starts_with('&'));
+    match body.find(';') {
+        Some(i) => match &body[1..i] {
+            "lt" => Ok((i - 1, "<")),
+            "gt" => Ok((i - 1, ">")),
+            _ => Err(EntityReadError::Unsupported(i)),
+        },
+        None => Err(EntityReadError::Eof),
+    }
+}
+
 fn show(body: &str) {
+    let mut chars = body.char_indices();
     let mut in_tag = false;
-    for c in body.chars() {
+
+    while let Some((i, c)) = chars.next() {
         if c == '<' {
             in_tag = true;
         } else if c == '>' {
             in_tag = false;
+        } else if c == '&' {
+            match read_entity(&body[i..]) {
+                Ok((j, entity)) => {
+                    print!("{entity}");
+                    chars.nth(j);
+                }
+                Err(EntityReadError::Eof) => {
+                    print!("{}", &body[i..]);
+                    chars.nth(body[i..].len());
+                }
+                Err(EntityReadError::Unsupported(j)) => {
+                    print!("{}", &body[i..i + j + 1]);
+                    chars.nth(j);
+                }
+            }
         } else if !in_tag {
             print!("{c}");
         }
