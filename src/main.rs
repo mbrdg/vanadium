@@ -12,19 +12,23 @@ use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStor
 
 pub enum Url {
     Http {
+        view_source: bool,
         host: String,
         port: u16,
         path: String,
     },
     Https {
+        view_source: bool,
         host: String,
         port: u16,
         path: String,
     },
     File {
+        view_source: bool,
         path: String,
     },
     Data {
+        view_source: bool,
         mediatype: String,
         content: String,
     },
@@ -32,6 +36,9 @@ pub enum Url {
 
 impl Url {
     pub fn new(url: &str) -> Self {
+        let view_source = url.starts_with("view-source:");
+        let url = url.strip_prefix("view-source:").unwrap_or(url);
+
         if url.starts_with("data:") {
             let (mediatype, content) = url.strip_prefix("data:").unwrap().split_once(',').unwrap();
             assert!(
@@ -40,6 +47,7 @@ impl Url {
             );
 
             return Self::Data {
+                view_source,
                 mediatype: mediatype.to_string(),
                 content: content.to_string(),
             };
@@ -48,6 +56,7 @@ impl Url {
         let (scheme, url) = url.split_once("://").unwrap();
         if scheme == "file" {
             return Self::File {
+                view_source,
                 path: url.to_string(),
             };
         }
@@ -73,14 +82,24 @@ impl Url {
         }
 
         match scheme {
-            "http" => Self::Http { host, port, path },
-            "https" => Self::Https { host, port, path },
+            "http" => Self::Http {
+                view_source,
+                host,
+                port,
+                path,
+            },
+            "https" => Self::Https {
+                view_source,
+                host,
+                port,
+                path,
+            },
             _ => panic!("Unsupported scheme: {scheme}"),
         }
     }
 
     pub fn request(&self) -> String {
-        if let Self::File { path } = self {
+        if let Self::File { path, .. } = self {
             let content = fs::read_to_string(path).unwrap();
             return content;
         }
@@ -90,9 +109,12 @@ impl Url {
         }
 
         let (host, port, path) = match self {
-            Self::Http { host, port, path } | Self::Https { host, port, path } => {
-                (host.as_str(), *port, path.as_str())
+            Self::Http {
+                host, port, path, ..
             }
+            | Self::Https {
+                host, port, path, ..
+            } => (host.as_str(), *port, path.as_str()),
             _ => panic!("`host`, `port` and `path` are only available for http/https schemes"),
         };
 
@@ -210,9 +232,26 @@ fn show(body: &str) {
     }
 }
 
+fn show_source(body: &str) {
+    for (number, line) in (1..).zip(body.lines()) {
+        println!("{number:>6} {line}")
+    }
+}
+
 fn load(url: &Url) {
     let body = url.request();
-    show(&body)
+    let view_source = match url {
+        Url::Http { view_source, .. }
+        | Url::Https { view_source, .. }
+        | Url::File { view_source, .. }
+        | Url::Data { view_source, .. } => *view_source,
+    };
+
+    if view_source {
+        show_source(&body)
+    } else {
+        show(&body)
+    }
 }
 
 fn main() {
