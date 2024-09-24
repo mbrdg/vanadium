@@ -29,7 +29,6 @@ pub enum Url {
     },
     Data {
         view_source: bool,
-        mediatype: String,
         content: String,
     },
 }
@@ -48,7 +47,6 @@ impl Url {
 
             return Self::Data {
                 view_source,
-                mediatype: mediatype.to_string(),
                 content: content.to_string(),
             };
         }
@@ -170,10 +168,8 @@ impl Url {
                 break;
             }
 
-            let mut parts = line.splitn(2, ':');
-            let header = parts.next().unwrap().to_lowercase();
-            let value = parts.next().unwrap().trim().to_string();
-            response_headers.insert(header, value);
+            let (header, value) = line.split_once(':').unwrap();
+            response_headers.insert(header.to_lowercase(), value.trim().to_string());
         }
 
         assert!(!response_headers.contains_key("transfer-encoding"));
@@ -222,7 +218,7 @@ fn show(body: &str) {
                     chars.nth(body[i..].len());
                 }
                 Err(EntityReadError::Unsupported(j)) => {
-                    print!("{}", &body[i..i + j + 1]);
+                    print!("{}", &body[i..=(i + j)]);
                     chars.nth(j);
                 }
             }
@@ -234,7 +230,7 @@ fn show(body: &str) {
 
 fn show_source(body: &str) {
     for (number, line) in (1..).zip(body.lines()) {
-        println!("{number:>6} {line}")
+        println!("{number:>6} {line}");
     }
 }
 
@@ -248,9 +244,9 @@ fn load(url: &Url) {
     };
 
     if view_source {
-        show_source(&body)
+        show_source(&body);
     } else {
-        show(&body)
+        show(&body);
     }
 }
 
