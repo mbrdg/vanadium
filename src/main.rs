@@ -3,29 +3,105 @@ use std::{
     env,
     fmt::Write as _,
     fs,
-    io::{BufRead, BufReader, Write as _},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
+    path::PathBuf,
     sync::Arc,
 };
 
-use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStore, Stream};
+use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
+pub enum RequestStream {
+    Tcp(TcpStream),
+    Tls(StreamOwned<ClientConnection, TcpStream>),
+}
+
+impl Read for RequestStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            RequestStream::Tcp(s) => s.read(buf),
+            RequestStream::Tls(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for RequestStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            RequestStream::Tcp(s) => s.write(buf),
+            RequestStream::Tls(s) => s.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            RequestStream::Tcp(s) => s.flush(),
+            RequestStream::Tls(s) => s.flush(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct RequestContext {
+    inner: HashMap<(String, u16), BufReader<RequestStream>>,
+}
+
+impl RequestContext {
+    fn build_reader(url: &Url) -> BufReader<RequestStream> {
+        match url {
+            Url::Http { addr, .. } => {
+                let s = TcpStream::connect(addr).unwrap();
+                BufReader::new(RequestStream::Tcp(s))
+            }
+            Url::Https { addr, .. } => {
+                let s = TcpStream::connect(addr).unwrap();
+                let root_store =
+                    RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                let config = ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+
+                let hostname = ServerName::try_from(addr.0.clone()).unwrap();
+                let client = ClientConnection::new(Arc::new(config), hostname).unwrap();
+                BufReader::new(RequestStream::Tls(StreamOwned::new(client, s)))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn stream(&mut self, url: &Url) -> &mut RequestStream {
+        self.reader(url).get_mut()
+    }
+
+    pub fn reader(&mut self, url: &Url) -> &mut BufReader<RequestStream> {
+        let (Url::Http { addr, .. } | Url::Https { addr, .. }) = url else {
+            panic!("Unsupported variant in this context: {url:?}");
+        };
+
+        if !self.inner.contains_key(addr) {
+            self.inner
+                .insert((addr.0.clone(), addr.1), Self::build_reader(url));
+        }
+
+        self.inner.get_mut(addr).unwrap()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum Url {
     Http {
         view_source: bool,
-        host: String,
-        port: u16,
-        path: String,
+        addr: (String, u16),
+        path: PathBuf,
     },
     Https {
         view_source: bool,
-        host: String,
-        port: u16,
-        path: String,
+        addr: (String, u16),
+        path: PathBuf,
     },
     File {
         view_source: bool,
-        path: String,
+        path: PathBuf,
     },
     Data {
         view_source: bool,
@@ -55,7 +131,7 @@ impl Url {
         if scheme == "file" {
             return Self::File {
                 view_source,
-                path: url.to_string(),
+                path: PathBuf::from(url),
             };
         }
 
@@ -106,55 +182,28 @@ impl Url {
             return content.to_string();
         }
 
-        let (host, port, path) = match self {
-            Self::Http {
-                host, port, path, ..
-            }
-            | Self::Https {
-                host, port, path, ..
-            } => (host.as_str(), *port, path.as_str()),
-            _ => panic!("`host`, `port` and `path` are only available for http/https schemes"),
+        let (Self::Http { path, .. } | Self::Https { path, .. }) = self else {
+            panic!("Network path is only available for http/https variants")
         };
 
-        let mut s = TcpStream::connect((host, port)).unwrap();
-
         let mut request = String::new();
-        write!(&mut request, "GET {path} HTTP/1.1\r\n").unwrap();
-        write!(&mut request, "Host: {host}\r\n").unwrap();
-        write!(&mut request, "Connection: close\r\n").unwrap();
+        write!(&mut request, "GET {} HTTP/1.1\r\n", path.display()).unwrap();
+        write!(&mut request, "Host: {}\r\n", self.display_host()).unwrap();
+        write!(&mut request, "Connection: keep-alive\r\n").unwrap();
         write!(&mut request, "User-Agent: vanadium/0.1.0\r\n").unwrap();
         write!(&mut request, "\r\n").unwrap();
 
-        match self {
-            Self::Http { .. } => {
-                s.write_all(request.as_bytes()).unwrap();
+        let s = ctx.stream(self);
+        s.write_all(request.as_bytes()).unwrap();
 
-                let mut response = BufReader::new(s);
-                Url::read_response(&mut response)
-            }
-            Self::Https { host, .. } => {
-                let root_store =
-                    RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-                let config = ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth();
-
-                let hostname = ServerName::try_from(host.clone()).unwrap();
-                let mut client = ClientConnection::new(Arc::new(config), hostname).unwrap();
-                let mut s = Stream::new(&mut client, &mut s);
-
-                s.write_all(request.as_bytes()).unwrap();
-
-                let mut response = BufReader::new(s);
-                Url::read_response(&mut response)
-            }
-            _ => unreachable!(),
-        }
+        let response = ctx.reader(self);
+        Url::read_response(response)
     }
 
-    fn read_response(reader: &mut impl BufRead) -> String {
+    fn read_response(reader: &mut BufReader<RequestStream>) -> String {
         let mut statusline = String::new();
         reader.read_line(&mut statusline).unwrap();
+
         let mut parts = statusline.splitn(3, ' ');
         let _version = parts.next().unwrap();
         let _status = parts.next().unwrap();
@@ -175,9 +224,15 @@ impl Url {
         assert!(!response_headers.contains_key("transfer-encoding"));
         assert!(!response_headers.contains_key("content-encoding"));
 
-        let mut content = String::new();
-        reader.read_to_string(&mut content).unwrap();
-        content
+        let content_length = response_headers
+            .get("content-length")
+            .expect("Missing content-length header in HTTP response")
+            .parse::<usize>()
+            .unwrap();
+        let mut content = vec![0u8; content_length];
+        reader.read_exact(&mut content).unwrap();
+
+        String::from_utf8(content).unwrap()
     }
 }
 
@@ -234,8 +289,8 @@ fn show_source(body: &str) {
     }
 }
 
-fn load(url: &Url) {
-    let body = url.request();
+fn load(url: &Url, ctx: &mut RequestContext) {
+    let body = url.request(ctx);
     let view_source = match url {
         Url::Http { view_source, .. }
         | Url::Https { view_source, .. }
@@ -257,5 +312,6 @@ fn main() {
         String::as_str,
     );
 
-    load(&Url::new(url));
+    let mut ctx = RequestContext::default();
+    load(&Url::new(url), &mut ctx);
 }
