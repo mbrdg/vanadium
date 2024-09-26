@@ -55,8 +55,10 @@ impl RequestContext {
             }
             Url::Https { addr, .. } => {
                 let s = TcpStream::connect(addr).unwrap();
-                let root_store =
-                    RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                let root_store = webpki_roots::TLS_SERVER_ROOTS
+                    .iter()
+                    .cloned()
+                    .collect::<RootCertStore>();
                 let config = ClientConfig::builder()
                     .with_root_certificates(root_store)
                     .with_no_client_auth();
