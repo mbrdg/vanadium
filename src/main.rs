@@ -13,7 +13,7 @@ use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStor
 
 pub enum RequestStream {
     Tcp(TcpStream),
-    Tls(StreamOwned<ClientConnection, TcpStream>),
+    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
 }
 
 impl Read for RequestStream {
@@ -63,7 +63,7 @@ impl RequestContext {
 
                 let hostname = ServerName::try_from(addr.0.clone()).unwrap();
                 let client = ClientConnection::new(Arc::new(config), hostname).unwrap();
-                BufReader::new(RequestStream::Tls(StreamOwned::new(client, s)))
+                BufReader::new(RequestStream::Tls(Box::new(StreamOwned::new(client, s))))
             }
             _ => unreachable!(),
         }
