@@ -167,21 +167,20 @@ impl Url {
         }
     }
 
+    pub fn view_source(&self) -> bool {
+        match self {
+            Url::Http { view_source, .. }
+            | Url::Https { view_source, .. }
+            | Url::File { view_source, .. }
+            | Url::Data { view_source, .. } => *view_source,
+        }
+    }
+
     fn display_host(&self) -> String {
         match self {
-            Url::Http {
-                addr: (host, 80), ..
-            }
-            | Url::Https {
-                addr: (host, 443), ..
-            } => host.to_string(),
-            Url::Http {
-                addr: (host, port), ..
-            }
-            | Url::Https {
-                addr: (host, port), ..
-            } => format!("{host}:{port}"),
-            _ => panic!("`addr` are only available for http/https variants"),
+            Url::Http { addr: (h, 80), .. } | Url::Https { addr: (h, 443), .. } => h.to_string(),
+            Url::Http { addr: (h, p), .. } | Url::Https { addr: (h, p), .. } => format!("{h}:{p}"),
+            _ => panic!("Network address is only available for http/https variants"),
         }
     }
 
@@ -304,14 +303,7 @@ fn show_source(body: &str) {
 
 fn load(url: &Url, ctx: &mut RequestContext) {
     let body = url.request(ctx);
-    let view_source = match url {
-        Url::Http { view_source, .. }
-        | Url::Https { view_source, .. }
-        | Url::File { view_source, .. }
-        | Url::Data { view_source, .. } => *view_source,
-    };
-
-    if view_source {
+    if url.view_source() {
         show_source(&body);
     } else {
         show(&body);
