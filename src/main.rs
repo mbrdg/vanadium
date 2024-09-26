@@ -105,6 +105,7 @@ pub enum Url {
     },
     Data {
         view_source: bool,
+        media_type: String,
         content: String,
     },
 }
@@ -115,14 +116,10 @@ impl Url {
         let url = url.strip_prefix("view-source:").unwrap_or(url);
 
         if url.starts_with("data:") {
-            let (mediatype, content) = url.strip_prefix("data:").unwrap().split_once(',').unwrap();
-            assert!(
-                mediatype == "text/html",
-                "Unsupported media type: {mediatype}"
-            );
-
+            let (media_type, content) = url.strip_prefix("data:").unwrap().split_once(',').unwrap();
             return Self::Data {
                 view_source,
+                media_type: media_type.to_string(),
                 content: content.to_string(),
             };
         }
@@ -140,39 +137,53 @@ impl Url {
             remainder.push('/');
         }
 
-        let (host, url) = remainder.split_once('/').unwrap();
-        let mut host = host.to_string();
+        let (mut host, path) = remainder.split_once('/').unwrap();
         let mut port = match scheme {
             "http" => 80,
             "https" => 443,
             _ => panic!("Unsupported scheme: {scheme}"),
         };
-        let path = format!("/{url}");
 
         if host.contains(':') {
-            let (h, p) = host.split_once(':').unwrap();
-            port = p.parse().unwrap();
-            host = h.to_string();
+            let addr = host.split_once(':').unwrap();
+            host = addr.0;
+            port = addr.1.parse().unwrap();
         }
 
         match scheme {
             "http" => Self::Http {
                 view_source,
-                host,
-                port,
-                path,
+                addr: (host.to_string(), port),
+                path: PathBuf::from(format!("/{path}")),
             },
             "https" => Self::Https {
                 view_source,
-                host,
-                port,
-                path,
+                addr: (host.to_string(), port),
+                path: PathBuf::from(format!("/{path}")),
             },
             _ => panic!("Unsupported scheme: {scheme}"),
         }
     }
 
-    pub fn request(&self) -> String {
+    fn display_host(&self) -> String {
+        match self {
+            Url::Http {
+                addr: (host, 80), ..
+            }
+            | Url::Https {
+                addr: (host, 443), ..
+            } => host.to_string(),
+            Url::Http {
+                addr: (host, port), ..
+            }
+            | Url::Https {
+                addr: (host, port), ..
+            } => format!("{host}:{port}"),
+            _ => panic!("`addr` are only available for http/https variants"),
+        }
+    }
+
+    pub fn request(&self, ctx: &mut RequestContext) -> String {
         if let Self::File { path, .. } = self {
             let content = fs::read_to_string(path).unwrap();
             return content;
