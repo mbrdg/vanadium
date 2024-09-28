@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
 };
 
+use flate2::bufread::GzDecoder;
 use rustls::{pki_types::ServerName, ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 pub enum RequestStream {
@@ -212,6 +213,7 @@ impl Url {
         write!(&mut request, "GET {} HTTP/1.1\r\n", path.display()).unwrap();
         write!(&mut request, "Host: {}\r\n", self.display_host()).unwrap();
         write!(&mut request, "Connection: keep-alive\r\n").unwrap();
+        write!(&mut request, "Accept-Encoding: gzip\r\n").unwrap();
         write!(&mut request, "User-Agent: vanadium/0.1.0\r\n").unwrap();
         write!(&mut request, "\r\n").unwrap();
 
@@ -243,27 +245,67 @@ impl Url {
             response_headers.insert(header.to_lowercase(), value.trim().to_string());
         }
 
-        assert!(!response_headers.contains_key("transfer-encoding"));
-        assert!(!response_headers.contains_key("content-encoding"));
-
-        let content_length = response_headers
-            .get("content-length")
-            .expect("Missing content-length header in HTTP response")
-            .parse::<usize>()
-            .unwrap();
-        let mut content = vec![0u8; content_length];
-        reader.read_exact(&mut content).unwrap();
+        let content = if response_headers
+            .get("transfer-encoding")
+            .is_some_and(|v| v == "chunked")
+        {
+            debug_assert!(!response_headers.contains_key("content-length"));
+            Url::read_chunks(reader)
+        } else {
+            let content_length = response_headers
+                .get("content-length")
+                .expect("Missing content-length header in HTTP response")
+                .parse::<usize>()
+                .unwrap();
+            let mut content = vec![0u8; content_length];
+            reader.read_exact(&mut content).unwrap();
+            content
+        };
 
         if Response::is_redirect(status) {
             let location = response_headers
                 .get("location")
                 .expect("Missing location header in HTTP response")
                 .to_string();
-            Response::Redirect(location)
-        } else {
-            let body = String::from_utf8(content).unwrap();
-            Response::Ok(body)
+            return Response::Redirect(location);
         }
+
+        let body = if response_headers
+            .get("content-encoding")
+            .is_some_and(|v| v == "gzip")
+        {
+            let mut decoder = GzDecoder::new(&content[..]);
+            let mut content = String::new();
+            decoder.read_to_string(&mut content).unwrap();
+            content
+        } else {
+            String::from_utf8(content).unwrap()
+        };
+
+        Response::Ok(body)
+    }
+
+    fn read_chunks(reader: &mut BufReader<RequestStream>) -> Vec<u8> {
+        let mut content = Vec::new();
+        loop {
+            let mut lengthline = String::new();
+            reader.read_line(&mut lengthline).unwrap();
+
+            let chunk_length = usize::from_str_radix(lengthline.trim_end(), 16).unwrap();
+            let mut chunk = vec![0u8; chunk_length];
+            reader.read_exact(&mut chunk).unwrap();
+
+            let mut terminator = String::with_capacity(2);
+            reader.read_line(&mut terminator).unwrap();
+            debug_assert_eq!(terminator, "\r\n");
+
+            content.extend(chunk);
+            if chunk_length == 0 {
+                break;
+            }
+        }
+
+        content
     }
 
     pub fn follow(&self, location: String) -> Self {
@@ -292,7 +334,7 @@ enum EntityReadError {
 }
 
 fn read_entity(body: &str) -> Result<(usize, &'static str), EntityReadError> {
-    assert!(body.starts_with('&'));
+    debug_assert!(body.starts_with('&'));
     match body.find(';') {
         Some(i) => match &body[1..i] {
             "lt" => Ok((i - 1, "<")),
