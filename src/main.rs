@@ -81,8 +81,7 @@ impl RequestContext {
         };
 
         if !self.inner.contains_key(addr) {
-            self.inner
-                .insert((addr.0.clone(), addr.1), Self::build_reader(url));
+            self.inner.insert(addr.clone(), Self::build_reader(url));
         }
 
         self.inner.get_mut(addr).unwrap()
@@ -178,7 +177,7 @@ impl Url {
         }
     }
 
-    pub fn view_source(&self) -> bool {
+    pub const fn view_source(&self) -> bool {
         match self {
             Url::Http { view_source, .. }
             | Url::Https { view_source, .. }
@@ -355,16 +354,12 @@ fn load(url: Url, ctx: &mut RequestContext) {
             Response::Ok(body) => return show(&body),
             Response::Redirect(location) => {
                 let follower = head.follow(location);
-                assert!(
-                    !path.contains(&follower),
-                    "Cycle detected in redirection chain"
-                );
+                assert!(!path.contains(&follower), "Redirection chain has a cycle");
 
                 path.push(follower);
+                assert!(path.len() < MAX_REDIRECTS, "Too many redirects");
             }
         }
-
-        assert!(path.len() < MAX_REDIRECTS, "Too many redirects");
     }
 }
 
