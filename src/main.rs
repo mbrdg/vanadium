@@ -89,7 +89,18 @@ impl RequestContext {
     }
 }
 
-#[derive(Clone, Debug)]
+pub enum Response {
+    Ok(String),
+    Redirect(String),
+}
+
+impl Response {
+    pub const fn is_redirect(status: u16) -> bool {
+        matches!(status, 301 | 302 | 303 | 307 | 308)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Url {
     Http {
         view_source: bool,
@@ -184,14 +195,14 @@ impl Url {
         }
     }
 
-    pub fn request(&self, ctx: &mut RequestContext) -> String {
+    pub fn request(&self, ctx: &mut RequestContext) -> Response {
         if let Self::File { path, .. } = self {
             let content = fs::read_to_string(path).unwrap();
-            return content;
+            return Response::Ok(content);
         }
 
         if let Self::Data { content, .. } = self {
-            return content.to_string();
+            return Response::Ok(content.to_string());
         }
 
         let (Self::Http { path, .. } | Self::Https { path, .. }) = self else {
@@ -212,13 +223,13 @@ impl Url {
         Url::read_response(response)
     }
 
-    fn read_response(reader: &mut BufReader<RequestStream>) -> String {
+    fn read_response(reader: &mut BufReader<RequestStream>) -> Response {
         let mut statusline = String::new();
         reader.read_line(&mut statusline).unwrap();
 
         let mut parts = statusline.splitn(3, ' ');
         let _version = parts.next().unwrap();
-        let _status = parts.next().unwrap();
+        let status = parts.next().unwrap().parse().unwrap();
         let _explanation = parts.next().unwrap();
 
         let mut response_headers = HashMap::new();
@@ -244,7 +255,35 @@ impl Url {
         let mut content = vec![0u8; content_length];
         reader.read_exact(&mut content).unwrap();
 
-        String::from_utf8(content).unwrap()
+        if Response::is_redirect(status) {
+            let location = response_headers
+                .get("location")
+                .expect("Missing location header in HTTP response")
+                .to_string();
+            Response::Redirect(location)
+        } else {
+            let body = String::from_utf8(content).unwrap();
+            Response::Ok(body)
+        }
+    }
+
+    pub fn follow(&self, location: String) -> Self {
+        match self {
+            Url::Http { .. } | Url::Https { .. } if !location.starts_with('/') => {
+                Url::new(&location)
+            }
+            Url::Http { addr, .. } => Url::Http {
+                view_source: false,
+                addr: addr.clone(),
+                path: PathBuf::from(location),
+            },
+            Url::Https { addr, .. } => Url::Https {
+                view_source: false,
+                addr: addr.clone(),
+                path: PathBuf::from(location),
+            },
+            _ => panic!("Link following can only be called for http/https variants"),
+        }
     }
 }
 
@@ -301,12 +340,31 @@ fn show_source(body: &str) {
     }
 }
 
-fn load(url: &Url, ctx: &mut RequestContext) {
-    let body = url.request(ctx);
-    if url.view_source() {
-        show_source(&body);
-    } else {
-        show(&body);
+fn load(url: Url, ctx: &mut RequestContext) {
+    const MAX_REDIRECTS: usize = 10;
+
+    let view_source = url.view_source();
+
+    let mut path = Vec::with_capacity(MAX_REDIRECTS);
+    path.push(url);
+
+    loop {
+        let head = path.last().unwrap();
+        match head.request(ctx) {
+            Response::Ok(body) if view_source => return show_source(&body),
+            Response::Ok(body) => return show(&body),
+            Response::Redirect(location) => {
+                let follower = head.follow(location);
+                assert!(
+                    !path.contains(&follower),
+                    "Cycle detected in redirection chain"
+                );
+
+                path.push(follower);
+            }
+        }
+
+        assert!(path.len() < MAX_REDIRECTS, "Too many redirects");
     }
 }
 
@@ -318,5 +376,5 @@ fn main() {
     );
 
     let mut ctx = RequestContext::default();
-    load(&Url::new(url), &mut ctx);
+    load(Url::new(url), &mut ctx);
 }
