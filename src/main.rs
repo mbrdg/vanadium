@@ -210,11 +210,12 @@ impl Url {
         };
 
         let mut request = String::new();
+        let version = env!("CARGO_PKG_VERSION");
         write!(&mut request, "GET {} HTTP/1.1\r\n", path.display()).unwrap();
         write!(&mut request, "Host: {}\r\n", self.display_host()).unwrap();
         write!(&mut request, "Connection: keep-alive\r\n").unwrap();
         write!(&mut request, "Accept-Encoding: gzip\r\n").unwrap();
-        write!(&mut request, "User-Agent: vanadium/0.1.0\r\n").unwrap();
+        write!(&mut request, "User-Agent: vanadium/{version}\r\n").unwrap();
         write!(&mut request, "\r\n").unwrap();
 
         let s = ctx.stream(self);
