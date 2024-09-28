@@ -334,7 +334,7 @@ enum EntityReadError {
 }
 
 fn read_entity(body: &str) -> Result<(usize, &'static str), EntityReadError> {
-    debug_assert!(body.starts_with('&'));
+    assert!(body.starts_with('&'));
     match body.find(';') {
         Some(i) => match &body[1..i] {
             "lt" => Ok((i - 1, "<")),
